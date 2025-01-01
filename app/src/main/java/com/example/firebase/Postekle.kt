@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.textfield.TextInputEditText
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.storage.FirebaseStorage
 import java.util.UUID
@@ -35,9 +36,7 @@ class Postekle : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_postekle)
 
-        // View'ları initialize et
         initializeViews()
-        // Click listener'ları ayarla
         setupClickListeners()
     }
 
@@ -67,21 +66,23 @@ class Postekle : AppCompatActivity() {
     }
 
     private fun checkPermission(): Boolean {
-        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
+        return ContextCompat.checkSelfPermission(
+            this,
             Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestPermission() {
-        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-        ActivityCompat.requestPermissions(this, arrayOf(permission), 1)
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+            PERMISSION_REQUEST_CODE
+        )
+    }
+
+    private fun openGallery() {
+        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+        galleryLauncher.launch(intent)
     }
 
     private val galleryLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -93,18 +94,13 @@ class Postekle : AppCompatActivity() {
         }
     }
 
-    private fun openGallery() {
-        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
-        galleryLauncher.launch(intent)
-    }
-
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 1) {
+        if (requestCode == PERMISSION_REQUEST_CODE) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 openGallery()
             } else {
-                Toast.makeText(this, "İzin vermeniz gerekiyor", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Galeriye erişmek için izin vermeniz gerekiyor.", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -116,17 +112,14 @@ class Postekle : AppCompatActivity() {
         val birthDate = birthDateEditText.text.toString().trim()
         val deathDate = deathDateEditText.text.toString().trim()
         val contributions = contributionsEditText.text.toString().trim()
+        val currentUserEmail = FirebaseAuth.getInstance().currentUser?.email ?: "Bilinmeyen Kullanıcı"
 
-        if (name.isBlank()) {
-            nameEditText.error = "Ad alanı boş bırakılamaz"
-            return
-        }
-        if (surname.isBlank()) {
-            surnameEditText.error = "Soyad alanı boş bırakılamaz"
+        if (name.isBlank() || surname.isBlank() || birthPlace.isBlank() || contributions.isBlank()) {
+            Toast.makeText(this, "Lütfen tüm gerekli alanları doldurun.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        saveDataToFirebase(selectedImageUri, name, surname, birthPlace, birthDate, deathDate, contributions)
+        saveDataToFirebase(selectedImageUri, name, surname, birthPlace, birthDate, deathDate, contributions, currentUserEmail)
     }
 
     private fun saveDataToFirebase(
@@ -136,48 +129,60 @@ class Postekle : AppCompatActivity() {
         birthPlace: String,
         birthDate: String,
         deathDate: String,
-        contributions: String
+        contributions: String,
+        email: String
     ) {
-        val storageReference = FirebaseStorage.getInstance().reference
         val firestoreReference = FirebaseFirestore.getInstance()
+        val storageReference = FirebaseStorage.getInstance().reference
 
-        if (imageUri != null) {
+        val imageTask = if (imageUri != null) {
             val fileName = "images/${UUID.randomUUID()}.jpg"
             val imageRef = storageReference.child(fileName)
+            imageRef.putFile(imageUri).continueWithTask { task ->
+                if (!task.isSuccessful) {
+                    throw task.exception ?: Exception("Resim yüklenemedi")
+                }
+                imageRef.downloadUrl
+            }
+        } else {
+            val taskCompletionSource = com.google.android.gms.tasks.TaskCompletionSource<Uri?>()
+            taskCompletionSource.setResult(null)
+            taskCompletionSource.task
+        }
 
-            imageRef.putFile(imageUri)
+        imageTask.addOnSuccessListener { imageUrl ->
+            val postData = hashMapOf(
+                "email" to email,
+                "name" to name,
+                "surname" to surname,
+                "birthPlace" to birthPlace,
+                "birthDate" to birthDate,
+                "deathDate" to deathDate,
+                "contributions" to contributions,
+                "imageUrl" to (imageUrl?.toString() ?: "")
+            )
+
+            firestoreReference.collection("posts")
+                .add(postData)
                 .addOnSuccessListener {
-                    imageRef.downloadUrl.addOnSuccessListener { imageUrl ->
-                        val postData = hashMapOf(
-                            "name" to name,
-                            "surname" to surname,
-                            "birthPlace" to birthPlace,
-                            "birthDate" to birthDate,
-                            "deathDate" to deathDate,
-                            "contributions" to contributions,
-                            "imageUrl" to imageUrl.toString()
-                        )
-                        firestoreReference.collection("posts")
-                            .add(postData)
-                            .addOnSuccessListener {
-                                Toast.makeText(this, "Veriler kaydedildi.", Toast.LENGTH_SHORT).show()
-                                clearForm()
-                            }
-                            .addOnFailureListener { e ->
-                                Toast.makeText(this, "Veritabanına kaydedilirken hata oluştu: ${e.message}", Toast.LENGTH_LONG).show()
-                            }
-                    }
+                    Toast.makeText(this, "Post başarıyla kaydedildi.", Toast.LENGTH_SHORT).show()
+                    clearForm()
+                    // MainPage'e yönlendir
+                    val intent = Intent(this, MainPage::class.java)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    finish()
                 }
                 .addOnFailureListener { e ->
-                    Toast.makeText(this, "Resim yüklenirken hata oluştu: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Post kaydedilirken hata oluştu: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
-        } else {
-            Toast.makeText(this, "Lütfen bir resim seçin.", Toast.LENGTH_SHORT).show()
+        }.addOnFailureListener { e ->
+            Toast.makeText(this, "Resim yüklenirken hata oluştu: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun clearForm() {
-        imageView.setImageResource(R.drawable.ic_launcher_background)
+        imageView.setImageResource(android.R.color.transparent)
         nameEditText.text?.clear()
         surnameEditText.text?.clear()
         birthPlaceEditText.text?.clear()
@@ -185,5 +190,9 @@ class Postekle : AppCompatActivity() {
         deathDateEditText.text?.clear()
         contributionsEditText.text?.clear()
         selectedImageUri = null
+    }
+
+    companion object {
+        private const val PERMISSION_REQUEST_CODE = 1
     }
 }

@@ -1,57 +1,79 @@
-    package com.example.firebase
+package com.example.firebase
 
+import android.content.Intent
+import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 
-    import android.content.Intent
-    import androidx.appcompat.app.AppCompatActivity
-    import android.os.Bundle
-    import android.util.Log
-    import android.view.Menu
-    import android.view.MenuItem
-    import android.widget.Toast
-    import com.google.firebase.auth.FirebaseAuth
+class MainPage : AppCompatActivity() {
 
-    class MainPage : AppCompatActivity() {
-        private lateinit var auth: FirebaseAuth
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var postAdapter: PostAdapter
+    private val postList = mutableListOf<Post>()
+    private lateinit var auth: FirebaseAuth
 
-        override fun onCreate(savedInstanceState: Bundle?) {
-            super.onCreate(savedInstanceState)
-            setContentView(R.layout.activity_main_page)
-            auth = FirebaseAuth.getInstance()
-        }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main_page)
 
-        override fun onCreateOptionsMenu(menu: Menu): Boolean {
-            menuInflater.inflate(R.menu.postmenu, menu)
-            return true
-        }
+        auth = FirebaseAuth.getInstance()
 
-        override fun onOptionsItemSelected(item: MenuItem): Boolean {
-            when (item.itemId) {
-                R.id.postekle -> {
-                    Log.d("MainPage", "Postekle menüsüne tıklandı")
-                    try {
-                        Log.d("MainPage", "Intent oluşturuluyor")
-                        val intent = Intent(this@MainPage, Postekle::class.java)
-                        Log.d("MainPage", "startActivity çağrılıyor")
-                        startActivity(intent)
-                        Log.d("MainPage", "startActivity çağrıldı")
-                        true
-                    } catch (e: Exception) {
-                        Log.e("MainPage", "Hata: ", e)
-                        Toast.makeText(this, "Hata: ${e.message}", Toast.LENGTH_LONG).show()
-                        false
-                    }
+        recyclerView = findViewById(R.id.recyclerView)
+        recyclerView.layoutManager = LinearLayoutManager(this)
+
+        postAdapter = PostAdapter(postList)
+        recyclerView.adapter = postAdapter
+
+        loadPosts()
+    }
+
+    private fun loadPosts() {
+        val firestoreReference = FirebaseFirestore.getInstance()
+        firestoreReference.collection("posts")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Toast.makeText(this, "Veriler yüklenirken hata oluştu.", Toast.LENGTH_SHORT).show()
+                    return@addSnapshotListener
                 }
-                R.id.exit -> {
-                    // Firebase'den çıkış yap
-                    auth.signOut()
-                    // Login sayfasına yönlendir
-                    val intent = Intent(this, loginPage::class.java)
-                    startActivity(intent)
-                    // MainPage'i kapat
-                    finish()
-                    return true
+
+                if (snapshot != null && !snapshot.isEmpty) {
+                    postList.clear()
+                    for (document in snapshot.documents) {
+                        val post = document.toObject(Post::class.java)
+                        post?.let { postList.add(it) }
+                    }
+                    postAdapter.notifyDataSetChanged()
                 }
             }
-            return super.onOptionsItemSelected(item)
-        }
     }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.postmenu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        when (item.itemId) {
+            R.id.postekle -> {
+                val intent = Intent(this@MainPage, Postekle::class.java)
+                startActivity(intent)
+                return true
+            }
+            R.id.exit -> {
+                auth.signOut()
+                Toast.makeText(this, "Çıkış yapıldı.", Toast.LENGTH_SHORT).show()
+                val intent = Intent(this, loginPage::class.java)
+                startActivity(intent)
+                finish()
+                return true
+            }
+        }
+        return super.onOptionsItemSelected(item)
+    }
+}
